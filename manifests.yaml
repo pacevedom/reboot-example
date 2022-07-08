@@ -1,0 +1,65 @@
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: reboot-example
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: reboot-example
+rules:
+- apiGroups:
+  - coordination.k8s.io
+  resources:
+  - leases
+  verbs:
+  - get
+  - watch
+  - list
+  - create
+  - update
+  - patch
+  - delete
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: reboot-example
+subjects:
+- kind: ServiceAccount
+  name: reboot-example
+roleRef:
+  kind: Role
+  name: reboot-example
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: reboot-example
+spec:
+  containers:
+  - name: reboot-example
+    image: quay.io/pacevedo/reboot-example
+    imagePullPolicy: Always
+    args:
+    - -leaseduration
+    - "60"
+    - -initialdelay
+    - "60"
+    env:
+    - name: NAME
+      valueFrom:
+        fieldRef:
+          fieldPath: metadata.name
+    - name: NAMESPACE
+      valueFrom:
+        fieldRef:
+          fieldPath: metadata.namespace
+    - name: NODE
+      valueFrom:
+        fieldRef:
+          fieldPath: spec.nodeName
+  restartPolicy: Never
+  serviceAccountName: reboot-example
