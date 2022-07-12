@@ -23,6 +23,18 @@ rules:
   - delete
 ---
 apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: reboot-example
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - nodes
+  verbs:
+  - get
+---
+apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
   name: reboot-example
@@ -31,6 +43,19 @@ subjects:
   name: reboot-example
 roleRef:
   kind: Role
+  name: reboot-example
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: reboot-example
+subjects:
+- kind: ServiceAccount
+  name: reboot-example
+  namespace: default
+roleRef:
+  kind: ClusterRole
   name: reboot-example
   apiGroup: rbac.authorization.k8s.io
 ---

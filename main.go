@@ -8,8 +8,10 @@ import (
 	"syscall"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	clientset "k8s.io/client-go/kubernetes"
+	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/leaderelection"
 	"k8s.io/client-go/tools/leaderelection/resourcelock"
@@ -30,7 +32,7 @@ func main() {
 	namespace := os.Getenv("NAMESPACE")
 	node := os.Getenv("NODE")
 
-	klog.Infof("holder: %s. namespace: %s. node: %s", holderIdentity, namespace, node)
+	klog.InfoS("Starting", "holder", holderIdentity, "namespace", namespace, "node", node)
 
 	cfg, err := rest.InClusterConfig()
 	if err != nil {
@@ -39,7 +41,7 @@ func main() {
 	client := clientset.NewForConfigOrDie(cfg)
 
 	run := func(ctx context.Context) {
-		klog.Info("Simulating work for %d seconds", *leaseDuration)
+		klog.InfoS("Simulating work", "seconds", *leaseDuration)
 		time.Sleep(time.Second * time.Duration(*leaseDuration))
 		klog.Info("Work done")
 	}
@@ -54,7 +56,7 @@ func main() {
 		leaderCancel()
 	}()
 
-	klog.Info("Waiting %d to start critical operation", *initialDelay)
+	klog.InfoS("Waiting to start critical operation", "seconds", *initialDelay)
 	time.Sleep(time.Duration(*initialDelay) * time.Second)
 	klog.Info("Starting critical operation")
 
@@ -84,20 +86,36 @@ func main() {
 		RetryPeriod:     5 * time.Second,
 		Callbacks: leaderelection.LeaderCallbacks{
 			OnStartedLeading: func(ctx context.Context) {
-				//TODO check node for inhibitor configured through conditions.
+				defer leaderCancel()
+				err := wait.PollImmediate(time.Second, time.Minute, func() (bool, error) {
+					node, err := client.CoreV1().Nodes().Get(ctx, node, metav1.GetOptions{})
+					if err != nil {
+						klog.ErrorS(err, "failed getting the node", "node", node)
+						return false, nil
+					}
+					for _, condition := range node.Status.Conditions {
+						//TODO pending addition to k8s.io/api/core/v1
+						if condition.Type == "RebootInhibited" && condition.Status == corev1.ConditionTrue {
+							return true, nil
+						}
+					}
+					return false, nil
+				})
+				if err != nil {
+					klog.Fatal(err)
+				}
 				run(ctx)
 				klog.Info("Done working")
-				cancel()
 			},
 			OnStoppedLeading: func() {
 				// executed after cancelling the context.
-				klog.Infof("leader lost: %s", holderIdentity)
+				klog.InfoS("leadership lost", "identity", holderIdentity)
 			},
 			OnNewLeader: func(identity string) {
 				if identity == holderIdentity {
 					return
 				}
-				klog.Infof("new leader elected: %s", identity)
+				klog.InfoS("new leader elected", "leader", identity)
 			},
 		},
 	})
