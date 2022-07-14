@@ -2,7 +2,7 @@ package main
 
 import (
 	"context"
-	"flag"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -19,14 +19,11 @@ import (
 )
 
 var (
-	leaseDuration = flag.Uint("leaseduration", 60, "Lease duration in seconds")
-	initialDelay = flag.Uint("initialdelay", 60, "Initial delay to grab the lease")
+	leaseCancel context.CancelFunc = nil
 )
 
 func main() {
 	klog.InitFlags(nil)
-
-	flag.Parse()
 
 	holderIdentity := os.Getenv("NAME")
 	namespace := os.Getenv("NAMESPACE")
@@ -41,24 +38,23 @@ func main() {
 	client := clientset.NewForConfigOrDie(cfg)
 
 	run := func(ctx context.Context) {
-		klog.InfoS("Simulating work", "seconds", *leaseDuration)
-		time.Sleep(time.Second * time.Duration(*leaseDuration))
-		klog.Info("Work done")
+		klog.Info("Simulating work")
+		select {
+		case <-ctx.Done():
+			break
+		}
+		klog.Info("Work finished")
 	}
-
-	leaderCtx, leaderCancel := context.WithCancel(context.Background())
 
 	ch := make(chan os.Signal, 1)
 	signal.Notify(ch, os.Interrupt, syscall.SIGTERM)
 	go func() {
 		<-ch
 		klog.Info("SIGTERM, shutting down")
-		leaderCancel()
+		if leaseCancel != nil {
+			leaseCancel()
+		}
 	}()
-
-	klog.InfoS("Waiting to start critical operation", "seconds", *initialDelay)
-	time.Sleep(time.Duration(*initialDelay) * time.Second)
-	klog.Info("Starting critical operation")
 
 	// The lease object we are using is in our own namespace and uses the
 	// node's name as the name for itself. Kubelet watches on leases with
@@ -72,54 +68,85 @@ func main() {
 		Client: client.CoordinationV1(),
 		LockConfig: resourcelock.ResourceLockConfig{
 			Identity: holderIdentity,
+			//TODO event recorder
 		},
 	}
 
-	// This simulates the acquire lease + critical operation + release workflow.
-	// Should be done like this in any operator. Time related variables are just
-	// placeholders.
-	leaderelection.RunOrDie(leaderCtx, leaderelection.LeaderElectionConfig{
-		Lock: lock,
-		ReleaseOnCancel: true,
-		LeaseDuration:   60 * time.Second,
-		RenewDeadline:   15 * time.Second,
-		RetryPeriod:     5 * time.Second,
-		Callbacks: leaderelection.LeaderCallbacks{
-			OnStartedLeading: func(ctx context.Context) {
-				defer leaderCancel()
-				err := wait.PollImmediate(time.Second, time.Minute, func() (bool, error) {
-					node, err := client.CoreV1().Nodes().Get(ctx, node, metav1.GetOptions{})
-					if err != nil {
-						klog.ErrorS(err, "failed getting the node", "node", node)
-						return false, nil
-					}
-					for _, condition := range node.Status.Conditions {
-						//TODO pending addition to k8s.io/api/core/v1
-						if condition.Type == "RebootInhibited" && condition.Status == corev1.ConditionTrue {
-							return true, nil
-						}
-					}
-					return false, nil
-				})
-				if err != nil {
-					klog.Fatal(err)
-				}
-				run(ctx)
-				klog.Info("Done working")
-			},
-			OnStoppedLeading: func() {
-				// executed after cancelling the context.
-				klog.InfoS("leadership lost", "identity", holderIdentity)
-			},
-			OnNewLeader: func(identity string) {
-				if identity == holderIdentity {
-					return
-				}
-				klog.InfoS("new leader elected", "leader", identity)
-			},
-		},
-	})
+	// Configure a simple HTTP server where we can start/stop critical operations
+	// at will.
+	http.HandleFunc("/start", func(w http.ResponseWriter, r *http.Request) {
+		klog.Info("Starting critical operation")
+		// leader election Run does not return until the lease is not held anymore
+		// or the context has been cancelled.
+		go func() {
+			if leaseCancel != nil {
+				return
+			}
+			leaderCtx, cancel := context.WithCancel(context.Background())
+			leaseCancel = cancel
+			klog.Info("leaseCancel is set now")
 
-	klog.Info("Critical operation is over. Resuming normal tasks...")
-	select {}
+			// Acquire the lease and start the critical operation when node is ready.
+			elector, err := leaderelection.NewLeaderElector(leaderelection.LeaderElectionConfig{
+				Lock: lock,
+				ReleaseOnCancel: true,
+				LeaseDuration: 60 * time.Second,
+				RenewDeadline: 15 * time.Second,
+				RetryPeriod: 5 * time.Second,
+				Callbacks: leaderelection.LeaderCallbacks{
+					OnStartedLeading: func(ctx context.Context) {
+						defer func() {
+							if leaseCancel != nil {
+								leaseCancel()
+								leaseCancel = nil
+							}
+						}()
+						err := wait.PollImmediate(time.Second, time.Minute, func() (bool, error) {
+							node, err := client.CoreV1().Nodes().Get(ctx, node, metav1.GetOptions{})
+							if err != nil {
+								klog.ErrorS(err, "failed getting the node", "node", node)
+								return false, nil
+							}
+							for _, condition := range node.Status.Conditions {
+								//TODO pending addition to k8s.io/api/core/v1
+								if condition.Type == "RebootInhibited" && condition.Status == corev1.ConditionTrue {
+									return true, nil
+								}
+							}
+							return false, nil
+						})
+						if err != nil {
+							klog.ErrorS(err, "failed waiting node conditions to be ready", "node", node)
+							return
+						}
+						run(ctx)
+						klog.Info("Done working")
+					},
+					OnStoppedLeading: func() {
+						klog.InfoS("leadership lost", "identity", holderIdentity)
+					},
+					OnNewLeader: func(identity string) {
+						if identity == holderIdentity {
+							return
+						}
+						klog.InfoS("new leader elected", "leader", identity)
+					},
+				},
+			})
+			if err != nil {
+				klog.ErrorS(err, "unable to create leader elector")
+				return
+			}
+			elector.Run(leaderCtx)
+		}()
+    })
+
+	http.HandleFunc("/stop", func(w http.ResponseWriter, r *http.Request) {
+        klog.Info("Stopping critical operation")
+		if leaseCancel != nil {
+			leaseCancel()
+			leaseCancel = nil
+		}
+    })
+	klog.Fatal(http.ListenAndServe(":8080", nil))
 }

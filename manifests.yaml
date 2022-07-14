@@ -68,11 +68,6 @@ spec:
   - name: reboot-example
     image: quay.io/pacevedo/reboot-example
     imagePullPolicy: Always
-    args:
-    - -leaseduration
-    - "60"
-    - -initialdelay
-    - "60"
     env:
     - name: NAME
       valueFrom:
