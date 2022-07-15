@@ -90,7 +90,7 @@ func main() {
 			elector, err := leaderelection.NewLeaderElector(leaderelection.LeaderElectionConfig{
 				Lock: lock,
 				ReleaseOnCancel: true,
-				LeaseDuration: 60 * time.Second,
+				LeaseDuration: 30 * time.Second,
 				RenewDeadline: 15 * time.Second,
 				RetryPeriod: 5 * time.Second,
 				Callbacks: leaderelection.LeaderCallbacks{
@@ -109,7 +109,7 @@ func main() {
 							}
 							for _, condition := range node.Status.Conditions {
 								//TODO pending addition to k8s.io/api/core/v1
-								if condition.Type == "RebootInhibited" && condition.Status == corev1.ConditionTrue {
+								if condition.Type == "ShutdownInhibited" && condition.Status == corev1.ConditionTrue {
 									return true, nil
 								}
 							}
