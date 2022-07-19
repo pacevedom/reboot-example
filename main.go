@@ -84,7 +84,6 @@ func main() {
 			}
 			leaderCtx, cancel := context.WithCancel(context.Background())
 			leaseCancel = cancel
-			klog.Info("leaseCancel is set now")
 
 			// Acquire the lease and start the critical operation when node is ready.
 			elector, err := leaderelection.NewLeaderElector(leaderelection.LeaderElectionConfig{
