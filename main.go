@@ -100,7 +100,7 @@ func main() {
 								leaseCancel = nil
 							}
 						}()
-						err := wait.PollImmediate(time.Second, time.Minute, func() (bool, error) {
+						err := wait.PollImmediate(time.Second, 10 * time.Minute, func() (bool, error) {
 							node, err := client.CoreV1().Nodes().Get(ctx, node, metav1.GetOptions{})
 							if err != nil {
 								klog.ErrorS(err, "failed getting the node", "node", node)
