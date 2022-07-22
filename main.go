@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"os"
 	"os/signal"
@@ -22,12 +23,17 @@ var (
 	leaseCancel context.CancelFunc = nil
 )
 
+func leaseHolderQualifiedIdentity(namespace, holder string) string {
+	return fmt.Sprintf("%s/%s", namespace, holder)
+}
+
 func main() {
 	klog.InitFlags(nil)
 
 	holderIdentity := os.Getenv("NAME")
 	namespace := os.Getenv("NAMESPACE")
 	node := os.Getenv("NODE")
+	holderQualifiedName := leaseHolderQualifiedIdentity(namespace, holderIdentity)
 
 	klog.InfoS("Starting", "holder", holderIdentity, "namespace", namespace, "node", node)
 
@@ -108,7 +114,7 @@ func main() {
 							}
 							for _, condition := range node.Status.Conditions {
 								//TODO pending addition to k8s.io/api/core/v1
-								if condition.Type == "ShutdownInhibited" && condition.Status == corev1.ConditionTrue {
+								if condition.Type == "ShutdownInhibited" && condition.Status == corev1.ConditionTrue && condition.Reason == holderQualifiedName {
 									return true, nil
 								}
 							}
